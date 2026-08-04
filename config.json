@@ -1,0 +1,35 @@
+{
+  "arxiv": {
+    "start_date": "2026-07-01",
+    "end_date": "2026-07-05",
+    "categories": [
+    "cs.AI", "cs.AR", "cs.CG", "cs.CL", "cs.CV",
+    "cs.DC", "cs.DM", "cs.DS", "cs.ET", "cs.FL",
+    "cs.GR", "cs.GT", "cs.LG",
+    "cs.MA", "cs.MM", "cs.NE",
+    "cs.PF", "cs.RO", "cs.SC"
+    ],
+    "batch_size": 100,
+    "sleep": 3,
+    "verbose": true,
+
+    "retry": 8,
+    "retry_sleep": 15,
+    "max_retry_sleep": 180,
+    "checkpoint": "arxiv_checkpoint.jsonl"
+  },
+  "deepseek": {
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-chat",
+    "temperature": 0,
+    "retry": 3,
+    "sleep": 1
+  },
+  "topics": [
+    "3D Gaussian Splatting optimization(faster, less memory and others, not quality)",
+    "Efficient VLM/VLA Models"
+  ],
+  "output": {
+    "csv": "related_arxiv_papers.csv"
+  }
+}
