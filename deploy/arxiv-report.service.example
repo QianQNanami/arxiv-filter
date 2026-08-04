@@ -1,0 +1,18 @@
+[Unit]
+Description=arXiv Paper Filter Report Web Service
+After=network.target
+
+[Service]
+Type=simple
+User=CHANGE_ME_USER
+Group=CHANGE_ME_GROUP
+WorkingDirectory=/opt/paper_filter
+Environment=ARXIV_REPORT_HOST=0.0.0.0
+Environment=ARXIV_REPORT_PORT=8000
+Environment=ARXIV_REPORT_OUTPUT_DIR=output
+ExecStart=/usr/bin/python3 /opt/paper_filter/web_server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

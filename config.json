@@ -34,6 +34,7 @@
   },
   "output": {
     "csv": "related_arxiv_papers.csv",
+    "html": "report_${date}.html",
     "dir": "output",
     "append_date": true
   },

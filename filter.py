@@ -1,6 +1,7 @@
 import csv
 import smtplib
 import argparse
+import html
 import json
 import time
 import re
@@ -240,6 +241,10 @@ def append_date_to_filename(filename: str, date_text: str | None = None) -> str:
     return str(path.with_name(dated_name))
 
 
+def date_text_to_slug(date_text: str) -> str:
+    return re.sub(r"[^0-9A-Za-z]+", "_", date_text).strip("_")
+
+
 def ensure_output_path(filename: str, output_dir: str = "output") -> str:
     path = Path(filename)
     output_path = path if path.parent != Path(".") else Path(output_dir) / path
@@ -446,7 +451,6 @@ def format_email_papers(results: List[Dict[str, str]]) -> str:
         sections.append(
             "\n".join([
                 f"[{paper['arxiv_id']}] {paper['title']}",
-                f"Abstract: {paper['abstract']}",
                 f"TL;DR: {paper.get('tldr') or 'N/A'}",
                 f"Link: {paper['link']}"
             ])
@@ -460,6 +464,7 @@ def render_email_body(
     config: Dict[str, Any],
     results: List[Dict[str, str]],
     output_csv: str,
+    report_html: str,
     period_date: str
 ) -> str:
     with open(template_path, "r", encoding="utf-8") as f:
@@ -472,6 +477,7 @@ def render_email_body(
         end_date=arxiv_cfg.get("end_date", ""),
         paper_count=str(len(results)),
         output_csv=output_csv,
+        report_html=report_html,
         papers=format_email_papers(results)
     )
 
@@ -511,6 +517,7 @@ def send_email_notification(
     secrets: Dict[str, Any],
     results: List[Dict[str, str]],
     output_csv: str,
+    report_html: str,
     period_date: str,
     enabled: bool
 ) -> None:
@@ -575,6 +582,7 @@ def send_email_notification(
                 config,
                 group_results,
                 output_csv,
+                report_html,
                 period_date
             )
 
@@ -591,6 +599,280 @@ def send_email_notification(
                 "[Email] Notification sent to: "
                 f"{', '.join(recipients)} ({len(group_results)} records)"
             )
+
+
+def group_results_by_topic(
+    results: List[Dict[str, str]]
+) -> Dict[str, List[Dict[str, str]]]:
+    grouped: Dict[str, List[Dict[str, str]]] = {}
+    for result in sorted(
+        results,
+        key=lambda item: (item["topic"].lower(), item["arxiv_id"])
+    ):
+        grouped.setdefault(result["topic"], []).append(result)
+    return grouped
+
+
+def render_html_report(
+    config: Dict[str, Any],
+    results: List[Dict[str, str]],
+    output_csv: str,
+    period_date: str
+) -> str:
+    grouped = group_results_by_topic(results)
+    topics = config.get("topics", [])
+    topic_blocks = []
+
+    for topic in topics:
+        papers = grouped.get(topic, [])
+        if not papers:
+            continue
+
+        paper_cards = []
+        for paper in papers:
+            paper_cards.append(f"""
+            <article class="paper-card">
+              <div class="paper-meta">
+                <a class="arxiv-id" href="{html.escape(paper['link'])}" target="_blank" rel="noreferrer">{html.escape(paper['arxiv_id'])}</a>
+                <span>{html.escape(paper.get('categories', ''))}</span>
+              </div>
+              <h3>{html.escape(paper['title'])}</h3>
+              <p class="tldr">{html.escape(paper.get('tldr') or 'N/A')}</p>
+              <details>
+                <summary>Abstract</summary>
+                <p>{html.escape(paper['abstract'])}</p>
+              </details>
+            </article>
+            """)
+
+        topic_blocks.append(f"""
+        <section class="topic-section">
+          <div class="section-head">
+            <h2>{html.escape(topic)}</h2>
+            <span>{len(papers)} papers</span>
+          </div>
+          {''.join(paper_cards)}
+        </section>
+        """)
+
+    if not topic_blocks:
+        topic_blocks.append("""
+        <section class="empty-state">
+          <h2>No related papers</h2>
+          <p>No papers matched the configured topics for this period.</p>
+        </section>
+        """)
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>arXiv Filter Report - {html.escape(period_date)}</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --ink: #1f2937;
+      --muted: #6b7280;
+      --line: #d9e0ea;
+      --accent: #2563eb;
+      --accent-soft: #e8f0ff;
+      --shadow: 0 14px 36px rgba(31, 41, 55, 0.08);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    }}
+    .topbar {{
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }}
+    .nav {{
+      max-width: 1180px;
+      margin: 0 auto;
+      min-height: 58px;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }}
+    .brand {{ font-weight: 700; letter-spacing: 0; }}
+    .nav a {{
+      color: var(--muted);
+      text-decoration: none;
+      margin-left: 20px;
+    }}
+    .wrap {{
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 24px 56px;
+    }}
+    .hero {{
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: end;
+      margin-bottom: 22px;
+    }}
+    h1 {{
+      margin: 0;
+      font-size: 32px;
+      line-height: 1.2;
+    }}
+    .subtle {{ color: var(--muted); margin: 8px 0 0; }}
+    .stats {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(140px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }}
+    .stat {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px 16px;
+      box-shadow: var(--shadow);
+    }}
+    .stat strong {{ display: block; font-size: 24px; }}
+    .stat span {{ color: var(--muted); font-size: 13px; }}
+    .topic-section {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      margin-bottom: 18px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }}
+    .section-head {{
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+      background: #fbfcff;
+    }}
+    .section-head h2 {{ margin: 0; font-size: 18px; }}
+    .section-head span {{
+      color: var(--accent);
+      background: var(--accent-soft);
+      border-radius: 999px;
+      padding: 3px 10px;
+      white-space: nowrap;
+      font-size: 13px;
+    }}
+    .paper-card {{
+      padding: 18px;
+      border-bottom: 1px solid var(--line);
+    }}
+    .paper-card:last-child {{ border-bottom: 0; }}
+    .paper-meta {{
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 7px;
+    }}
+    .arxiv-id {{
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 650;
+    }}
+    h3 {{
+      margin: 0 0 9px;
+      font-size: 17px;
+      line-height: 1.35;
+    }}
+    .tldr {{
+      margin: 0 0 12px;
+      border-left: 3px solid var(--accent);
+      padding-left: 12px;
+      color: #374151;
+    }}
+    details {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #fcfdff;
+    }}
+    summary {{
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 650;
+    }}
+    details p {{ margin: 10px 0 0; color: #4b5563; }}
+    .empty-state {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 32px;
+      box-shadow: var(--shadow);
+    }}
+    @media (max-width: 760px) {{
+      .hero {{ grid-template-columns: 1fr; }}
+      .stats {{ grid-template-columns: 1fr; }}
+      .nav {{ padding: 0 16px; }}
+      .wrap {{ padding: 22px 16px 40px; }}
+    }}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <nav class="nav">
+      <div class="brand">arXiv Paper Filter</div>
+      <div>
+        <a href="./">Reports</a>
+        <a href="{html.escape(output_csv)}">CSV</a>
+      </div>
+    </nav>
+  </header>
+  <main class="wrap">
+    <section class="hero">
+      <div>
+        <h1>Report for {html.escape(period_date)}</h1>
+        <p class="subtle">Related papers grouped by configured research topics.</p>
+      </div>
+    </section>
+    <section class="stats">
+      <div class="stat"><strong>{len(results)}</strong><span>Related records</span></div>
+      <div class="stat"><strong>{len(grouped)}</strong><span>Matched topics</span></div>
+      <div class="stat"><strong>{len(set(item['arxiv_id'] for item in results))}</strong><span>Unique papers</span></div>
+    </section>
+    {''.join(topic_blocks)}
+  </main>
+</body>
+</html>
+"""
+
+
+def save_html_report(
+    config: Dict[str, Any],
+    results: List[Dict[str, str]],
+    output_csv: str,
+    period_date: str
+) -> str:
+    output_cfg = config.get("output", {})
+    output_dir = output_cfg.get("dir", "output")
+    report_name = output_cfg.get("html", "report_${date}.html")
+    report_name = Template(report_name).safe_substitute(
+        date=date_text_to_slug(period_date)
+    )
+    report_path = ensure_output_path(report_name, output_dir)
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(render_html_report(config, results, output_csv, period_date))
+
+    return report_path
 
 
 def main() -> None:
@@ -647,11 +929,13 @@ def main() -> None:
             })
 
     save_results(results, output_csv)
+    report_html = save_html_report(config, results, output_csv, period_date)
     send_email_notification(
         config,
         secrets,
         results,
         output_csv,
+        report_html,
         period_date,
         args.send_email
     )
@@ -659,6 +943,7 @@ def main() -> None:
     print("\n筛选完成")
     print(f"相关记录数量：{len(results)}")
     print(f"结果已保存到：{output_csv}")
+    print(f"HTML 报告已保存到：{report_html}")
 
 
 if __name__ == "__main__":
