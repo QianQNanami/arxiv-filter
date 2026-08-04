@@ -1,0 +1,7 @@
+arXiv paper filter report
+Date: ${date}
+Range: ${start_date} to ${end_date}
+Related records: ${paper_count}
+CSV: ${output_csv}
+
+${papers}

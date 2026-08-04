@@ -1,21 +1,26 @@
 import csv
+import smtplib
+import argparse
 import json
 import time
 import re
+from datetime import datetime, timedelta
+from email.message import EmailMessage
+from pathlib import Path
+from string import Template
 from typing import Dict, Any, List
-
-import requests
-import feedparser
-from tqdm import tqdm
-from openai import OpenAI
 
 
 ARXIV_API_URL = "http://export.arxiv.org/api/query"
 
 
-def load_config(config_path: str) -> Dict[str, Any]:
-    with open(config_path, "r", encoding="utf-8") as f:
+def load_json(json_path: str) -> Dict[str, Any]:
+    with open(json_path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_config(config_path: str) -> Dict[str, Any]:
+    return load_json(config_path)
 
 
 def clean_text(text: str) -> str:
@@ -46,7 +51,9 @@ def request_arxiv_with_retry(
     retry: int = 8,
     base_sleep: int = 15,
     max_sleep: int = 180
-) -> requests.Response:
+) -> Any:
+    import requests
+
     last_error = None
 
     for attempt in range(1, retry + 1):
@@ -106,6 +113,8 @@ def append_checkpoint(checkpoint_path: str, paper: Dict[str, str]) -> None:
 
 
 def fetch_arxiv_papers(config: Dict[str, Any]) -> List[Dict[str, str]]:
+    import feedparser
+
     arxiv_cfg = config["arxiv"]
 
     query = build_arxiv_query(config)
@@ -209,13 +218,106 @@ def fetch_arxiv_papers(config: Dict[str, Any]) -> List[Dict[str, str]]:
     return papers
 
 
-def get_deepseek_client(config: Dict[str, Any]) -> OpenAI:
+def get_secret(secrets: Dict[str, Any], *keys: str, required: bool = True) -> str:
+    for key in keys:
+        value = secrets.get(key)
+        if value:
+            return value
+
+    if required:
+        joined_keys = ", ".join(keys)
+        raise KeyError(f"Missing required secret: {joined_keys}")
+
+    return ""
+
+
+def append_date_to_filename(filename: str, date_text: str | None = None) -> str:
+    path = Path(filename)
+    suffix = "".join(path.suffixes)
+    stem = path.name[:-len(suffix)] if suffix else path.name
+    date_suffix = date_text or datetime.now().strftime("%Y%m%d")
+    dated_name = f"{stem}_{date_suffix}{suffix}"
+    return str(path.with_name(dated_name))
+
+
+def ensure_output_path(filename: str, output_dir: str = "output") -> str:
+    path = Path(filename)
+    output_path = path if path.parent != Path(".") else Path(output_dir) / path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    return str(output_path)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Fetch arXiv papers, filter them with an LLM, and export results."
+    )
+    parser.add_argument(
+        "--send-email",
+        action="store_true",
+        help="Send an email notification after filtering."
+    )
+    parser.add_argument(
+        "--use-yesterday",
+        action="store_true",
+        help="Use yesterday as both arXiv start_date and end_date."
+    )
+    return parser.parse_args()
+
+
+def apply_runtime_options(
+    config: Dict[str, Any],
+    args: argparse.Namespace
+) -> str | None:
+    if not args.use_yesterday:
+        return None
+
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    config["arxiv"]["start_date"] = yesterday
+    config["arxiv"]["end_date"] = yesterday
+    print(f"[Config] Using yesterday for arXiv date range: {yesterday}")
+    return yesterday
+
+
+def format_period_date(config: Dict[str, Any]) -> str:
+    arxiv_cfg = config["arxiv"]
+    start_date = arxiv_cfg.get("start_date", "")
+    end_date = arxiv_cfg.get("end_date", "")
+
+    if start_date and end_date and start_date != end_date:
+        return f"{start_date} to {end_date}"
+
+    return start_date or end_date or datetime.now().strftime("%Y-%m-%d")
+
+
+def get_deepseek_client(
+    config: Dict[str, Any],
+    secrets: Dict[str, Any]
+) -> Any:
+    from openai import OpenAI
+
     deepseek_cfg = config["deepseek"]
 
     return OpenAI(
-        api_key=deepseek_cfg["api_key"],
+        api_key=get_secret(secrets, "deepseek_api_key", "api-key", "api_key"),
         base_url=deepseek_cfg.get("base_url", "https://api.deepseek.com")
     )
+
+
+def build_prompt(
+    prompt_config: Dict[str, Any],
+    topics: List[str],
+    paper: Dict[str, str]
+) -> str:
+    topic_text = "\n".join(
+        [f"{i + 1}. {topic}" for i, topic in enumerate(topics)]
+    )
+    template = Template(prompt_config["relevance_prompt"])
+    return template.safe_substitute(
+        topic_text=topic_text,
+        arxiv_id=paper["arxiv_id"],
+        title=paper["title"],
+        abstract=paper["abstract"]
+    ).strip()
 
 
 def extract_json_from_response(text: str) -> Dict[str, Any]:
@@ -235,10 +337,11 @@ def extract_json_from_response(text: str) -> Dict[str, Any]:
 
 
 def judge_relevance(
-    client: OpenAI,
+    client: Any,
     config: Dict[str, Any],
+    prompt_config: Dict[str, Any],
     paper: Dict[str, str]
-) -> List[str]:
+) -> Dict[str, Any]:
     deepseek_cfg = config["deepseek"]
     topics = config["topics"]
 
@@ -248,42 +351,7 @@ def judge_relevance(
     sleep_time = deepseek_cfg.get("sleep", 2)
     verbose = deepseek_cfg.get("verbose", True)
 
-    topic_text = "\n".join(
-        [f"{i + 1}. {topic}" for i, topic in enumerate(topics)]
-    )
-
-    prompt = f"""
-你是一名严谨的学术论文筛选助手。
-
-请根据论文标题和摘要，判断该论文是否与下面任意研究主题相关。
-
-研究主题：
-{topic_text}
-
-论文编号：
-{paper["arxiv_id"]}
-
-论文标题：
-{paper["title"]}
-
-论文摘要：
-{paper["abstract"]}
-
-判断标准：
-1. 只根据标题和摘要判断，不要臆测全文内容。
-2. 只要论文与某个研究主题在问题、方法、系统、应用场景上有明确关系，就认为相关。
-3. 如果只是泛泛出现相似词汇，但研究问题明显不同，不要认为相关。
-4. 一篇论文可以关联多个主题。
-5. 如果不相关，返回空列表。
-
-请只输出 JSON，不要输出解释文字。
-
-输出格式：
-{{
-  "related_topics": ["主题词1", "主题词2"],
-  "reason": "一句话说明为什么相关或不相关"
-}}
-""".strip()
+    prompt = build_prompt(prompt_config, topics, paper)
 
     if verbose:
         print("\n" + "=" * 100)
@@ -309,17 +377,23 @@ def judge_relevance(
                 topic for topic in raw_related_topics
                 if topic in topics
             ]
+            tldr = clean_text(data.get("tldr", ""))
 
             if verbose:
                 print(f"[DeepSeek] Raw response: {content}")
                 print(f"[DeepSeek] Parsed topics: {related_topics}")
                 print(f"[DeepSeek] Reason: {reason}")
+                print(f"[DeepSeek] TL;DR: {tldr}")
                 print(
                     "[DeepSeek] Decision: "
                     + ("RELATED" if related_topics else "NOT RELATED")
                 )
 
-            return related_topics
+            return {
+                "related_topics": related_topics,
+                "reason": reason,
+                "tldr": tldr
+            }
 
         except Exception as e:
             wait_time = sleep_time * attempt
@@ -330,7 +404,7 @@ def judge_relevance(
             time.sleep(wait_time)
 
     print(f"[DeepSeek] Failed, skip: {paper['arxiv_id']} | {paper['title']}")
-    return []
+    return {"related_topics": [], "reason": "", "tldr": ""}
 
 
 def save_results(results: List[Dict[str, str]], output_csv: str) -> None:
@@ -339,6 +413,7 @@ def save_results(results: List[Dict[str, str]], output_csv: str) -> None:
         "arxiv_id",
         "title",
         "abstract",
+        "tldr",
         "published",
         "updated",
         "categories",
@@ -351,29 +426,212 @@ def save_results(results: List[Dict[str, str]], output_csv: str) -> None:
         writer.writerows(results)
 
 
+def format_email_papers(results: List[Dict[str, str]]) -> str:
+    if not results:
+        return "No related papers were found."
+
+    sorted_results = sorted(
+        results,
+        key=lambda item: (item["topic"].lower(), item["arxiv_id"])
+    )
+
+    sections = []
+    current_topic = None
+
+    for paper in sorted_results:
+        if paper["topic"] != current_topic:
+            current_topic = paper["topic"]
+            sections.append(f"\n## {current_topic}\n")
+
+        sections.append(
+            "\n".join([
+                f"[{paper['arxiv_id']}] {paper['title']}",
+                f"Abstract: {paper['abstract']}",
+                f"TL;DR: {paper.get('tldr') or 'N/A'}",
+                f"Link: {paper['link']}"
+            ])
+        )
+
+    return "\n\n".join(sections).strip()
+
+
+def render_email_body(
+    template_path: str,
+    config: Dict[str, Any],
+    results: List[Dict[str, str]],
+    output_csv: str,
+    period_date: str
+) -> str:
+    with open(template_path, "r", encoding="utf-8") as f:
+        template = Template(f.read())
+
+    arxiv_cfg = config["arxiv"]
+    return template.safe_substitute(
+        date=period_date,
+        start_date=arxiv_cfg.get("start_date", ""),
+        end_date=arxiv_cfg.get("end_date", ""),
+        paper_count=str(len(results)),
+        output_csv=output_csv,
+        papers=format_email_papers(results)
+    )
+
+
+def normalize_recipients(value: Any) -> List[str]:
+    if isinstance(value, str):
+        return [value]
+    return value or []
+
+
+def get_email_recipient_groups(email_cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    normalized_groups = []
+    for group in email_cfg.get("recipient_groups", []):
+        recipients = normalize_recipients(group.get("to", []))
+        if not recipients:
+            continue
+        normalized_groups.append({
+            "to": recipients,
+            "topics": group.get("topics", [])
+        })
+    return normalized_groups
+
+
+def filter_results_by_topics(
+    results: List[Dict[str, str]],
+    topics: List[str]
+) -> List[Dict[str, str]]:
+    if not topics:
+        return results
+
+    topic_set = set(topics)
+    return [result for result in results if result["topic"] in topic_set]
+
+
+def send_email_notification(
+    config: Dict[str, Any],
+    secrets: Dict[str, Any],
+    results: List[Dict[str, str]],
+    output_csv: str,
+    period_date: str,
+    enabled: bool
+) -> None:
+    email_cfg = config.get("email", {})
+    if not enabled:
+        print("[Email] Notification disabled.")
+        return
+
+    recipient_groups = get_email_recipient_groups(email_cfg)
+    if not recipient_groups:
+        raise ValueError(
+            "Email is enabled, but no recipients are configured."
+        )
+
+    smtp_cfg = secrets.get("smtp", {})
+    smtp_host = smtp_cfg.get("host") or email_cfg.get("smtp_host")
+    smtp_port = int(smtp_cfg.get("port") or email_cfg.get("smtp_port", 587))
+    smtp_user = smtp_cfg.get("username") or get_secret(
+        secrets,
+        "mail-user",
+        "mail_user",
+        "smtp_username",
+        required=False
+    )
+    smtp_password = smtp_cfg.get("password") or get_secret(
+        secrets,
+        "mail-key",
+        "mail_key",
+        "smtp_password",
+        required=False
+    )
+    sender = smtp_cfg.get("from") or email_cfg.get("from") or smtp_user
+
+    if not smtp_host or not sender or not smtp_password:
+        raise ValueError(
+            "Email is enabled, but SMTP host, sender, or password is missing."
+        )
+
+    template_path = email_cfg.get("template", "email_template.txt")
+    use_ssl = email_cfg.get("use_ssl", False)
+    use_tls = email_cfg.get("use_tls", not use_ssl)
+
+    if use_ssl:
+        server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30)
+    else:
+        server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
+
+    with server:
+        if use_tls:
+            server.starttls()
+        if smtp_user:
+            server.login(smtp_user, smtp_password)
+
+        for group in recipient_groups:
+            recipients = group["to"]
+            group_results = filter_results_by_topics(
+                results,
+                group.get("topics", [])
+            )
+            body = render_email_body(
+                template_path,
+                config,
+                group_results,
+                output_csv,
+                period_date
+            )
+
+            message = EmailMessage()
+            message["From"] = sender
+            message["To"] = ", ".join(recipients)
+            message["Subject"] = Template(
+                email_cfg.get("subject", "arXiv paper filter - ${date}")
+            ).safe_substitute(date=period_date)
+            message.set_content(body)
+            server.send_message(message)
+
+            print(
+                "[Email] Notification sent to: "
+                f"{', '.join(recipients)} ({len(group_results)} records)"
+            )
+
+
 def main() -> None:
+    from tqdm import tqdm
+
+    args = parse_args()
     config = load_config("config.json")
+    runtime_date = apply_runtime_options(config, args)
+    secrets = load_json("secrets.json")
+    prompt_config = load_json(config.get("prompt", {}).get("file", "prompt.json"))
 
     output_csv = config.get("output", {}).get(
         "csv",
         "related_arxiv_papers.csv"
     )
+    if config.get("output", {}).get("append_date", True):
+        output_date = runtime_date.replace("-", "") if runtime_date else None
+        output_csv = append_date_to_filename(output_csv, output_date)
+    output_csv = ensure_output_path(
+        output_csv,
+        config.get("output", {}).get("dir", "output")
+    )
+    period_date = format_period_date(config)
 
     print("开始从 arXiv 拉取论文...")
     papers = fetch_arxiv_papers(config)
     print(f"\n共拉取论文数量：{len(papers)}")
 
-    client = get_deepseek_client(config)
+    client = get_deepseek_client(config, secrets)
     results = []
 
     print("\n开始调用 DeepSeek 判断论文主题相关性...")
 
     for paper in tqdm(papers, desc="DeepSeek filtering"):
-        related_topics = judge_relevance(
+        judgment = judge_relevance(
             client=client,
             config=config,
+            prompt_config=prompt_config,
             paper=paper
         )
+        related_topics = judgment["related_topics"]
 
         for topic in related_topics:
             results.append({
@@ -381,6 +639,7 @@ def main() -> None:
                 "arxiv_id": paper["arxiv_id"],
                 "title": paper["title"],
                 "abstract": paper["abstract"],
+                "tldr": judgment.get("tldr", ""),
                 "published": paper["published"],
                 "updated": paper["updated"],
                 "categories": paper["categories"],
@@ -388,6 +647,14 @@ def main() -> None:
             })
 
     save_results(results, output_csv)
+    send_email_notification(
+        config,
+        secrets,
+        results,
+        output_csv,
+        period_date,
+        args.send_email
+    )
 
     print("\n筛选完成")
     print(f"相关记录数量：{len(results)}")
