@@ -36,8 +36,7 @@ def normalize_arxiv_id(entry_id: str) -> str:
 def build_arxiv_query(config: Dict[str, Any]) -> str:
     arxiv_cfg = config["arxiv"]
 
-    start = arxiv_cfg["start_date"].replace("-", "") + "0000"
-    end = arxiv_cfg["end_date"].replace("-", "") + "2359"
+    start, end = get_arxiv_query_window(config)
     date_query = f"submittedDate:[{start} TO {end}]"
 
     categories = arxiv_cfg.get("categories", [])
@@ -46,6 +45,34 @@ def build_arxiv_query(config: Dict[str, Any]) -> str:
         return f"({cat_query}) AND {date_query}"
 
     return date_query
+
+
+def compact_arxiv_datetime(date_text: str, time_text: str) -> str:
+    return date_text.replace("-", "") + time_text.replace(":", "")
+
+
+def get_arxiv_query_window(config: Dict[str, Any]) -> tuple[str, str]:
+    arxiv_cfg = config["arxiv"]
+    query_window = arxiv_cfg.get("query_window", {})
+
+    if query_window.get("mode") == "daily_cutoff_utc":
+        report_date = datetime.strptime(arxiv_cfg["start_date"], "%Y-%m-%d")
+        cutoff_time = query_window.get("cutoff_time_utc", "14:00")
+        previous_date = (report_date - timedelta(days=1)).strftime("%Y-%m-%d")
+        current_date = report_date.strftime("%Y-%m-%d")
+        return (
+            compact_arxiv_datetime(previous_date, cutoff_time),
+            compact_arxiv_datetime(current_date, cutoff_time)
+        )
+
+    start = arxiv_cfg["start_date"].replace("-", "") + "0000"
+    end = arxiv_cfg["end_date"].replace("-", "") + "2359"
+    return start, end
+
+
+def format_query_window(config: Dict[str, Any]) -> str:
+    start, end = get_arxiv_query_window(config)
+    return f"{start} to {end}"
 
 
 def request_arxiv_with_retry(
@@ -160,6 +187,7 @@ def fetch_arxiv_papers(config: Dict[str, Any]) -> List[Dict[str, str]]:
 
     start = len(papers)
 
+    print(f"[arXiv] Query window: {format_query_window(config)}")
     print(f"[arXiv] Query: {query}")
 
     while True:
@@ -284,7 +312,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--use-yesterday",
         action="store_true",
-        help="Use yesterday as both arXiv start_date and end_date."
+        help="Use yesterday as the report date and query the configured daily arXiv window."
     )
     return parser.parse_args()
 
@@ -299,7 +327,10 @@ def apply_runtime_options(
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     config["arxiv"]["start_date"] = yesterday
     config["arxiv"]["end_date"] = yesterday
-    print(f"[Config] Using yesterday for arXiv date range: {yesterday}")
+    config["arxiv"].setdefault("query_window", {})
+    config["arxiv"]["query_window"]["mode"] = "daily_cutoff_utc"
+    print(f"[Config] Using yesterday as report date: {yesterday}")
+    print(f"[Config] arXiv query window: {format_query_window(config)}")
     return yesterday
 
 
@@ -495,6 +526,7 @@ def render_email_body(
         date=period_date,
         start_date=arxiv_cfg.get("start_date", ""),
         end_date=arxiv_cfg.get("end_date", ""),
+        query_window=format_query_window(config),
         paper_count=str(len(results)),
         output_csv=output_csv,
         report_html=report_html,
@@ -861,6 +893,7 @@ def render_html_report(
       <div>
         <h1>Report for {html.escape(period_date)}</h1>
         <p class="subtle">Related papers grouped by configured research topics.</p>
+        <p class="subtle">arXiv query window: {html.escape(format_query_window(config))}</p>
       </div>
     </section>
     <section class="stats">

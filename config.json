@@ -16,6 +16,10 @@
     "retry": 8,
     "retry_sleep": 15,
     "max_retry_sleep": 180,
+    "query_window": {
+      "mode": "calendar_day",
+      "cutoff_time_utc": "14:00"
+    },
     "checkpoint": "output/checkpoints/arxiv_${date}_${query_hash}.jsonl"
   },
   "deepseek": {

@@ -38,6 +38,7 @@ Main fields:
 
 - `arxiv.start_date` / `arxiv.end_date`: date range used when `--use-yesterday` is not set.
 - `arxiv.categories`: arXiv categories to search.
+- `arxiv.query_window`: controls how `submittedDate` query windows are built.
 - `arxiv.checkpoint`: checkpoint template for resumed arXiv fetching.
 - `topics`: research topics used by the LLM relevance judge.
 - `prompt.file`: prompt template file, default `prompt.json`.
@@ -121,6 +122,7 @@ The email template supports:
 - `${date}`: the covered arXiv period, not the email send date.
 - `${start_date}`
 - `${end_date}`
+- `${query_window}`
 - `${paper_count}`
 - `${output_csv}`
 - `${report_html}`
@@ -137,7 +139,7 @@ Use dates from `config.json`:
 python filter.py
 ```
 
-Use yesterday as both `start_date` and `end_date`:
+Use yesterday as the report date and query the configured arXiv daily window:
 
 ```powershell
 python filter.py --use-yesterday
@@ -168,6 +170,35 @@ http://127.0.0.1:8000
 ```
 
 The page lists generated `output/report_*.html` files and lets you choose the report date.
+
+### arXiv daily window
+
+With `--use-yesterday`, the script treats yesterday as the report date, but it does not query the UTC natural day `00:00` to `23:59`.
+
+Instead, it uses the arXiv daily cutoff window:
+
+```text
+report_date - 1 day at cutoff_time_utc
+to
+report_date at cutoff_time_utc
+```
+
+The default cutoff is configured as:
+
+```json
+"query_window": {
+  "mode": "calendar_day",
+  "cutoff_time_utc": "14:00"
+}
+```
+
+When `--use-yesterday` is passed, `mode` is switched at runtime to `daily_cutoff_utc`. For report date `2026-08-04`, the default query window is:
+
+```text
+202608031400 to 202608041400
+```
+
+This better matches arXiv daily update behavior than querying `202608040000` to `202608042359`.
 
 By default, the web service listens on `0.0.0.0:8000`, so it can be accessed from another machine with:
 

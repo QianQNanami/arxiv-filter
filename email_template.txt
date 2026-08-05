@@ -1,6 +1,7 @@
 arXiv paper filter report
 Date: ${date}
 Range: ${start_date} to ${end_date}
+arXiv query window: ${query_window}
 Related records: ${paper_count}
 CSV: ${output_csv}
 HTML report: ${report_html}
