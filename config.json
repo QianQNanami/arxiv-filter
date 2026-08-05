@@ -16,7 +16,7 @@
     "retry": 8,
     "retry_sleep": 15,
     "max_retry_sleep": 180,
-    "checkpoint": "arxiv_checkpoint.jsonl"
+    "checkpoint": "output/checkpoints/arxiv_${date}_${query_hash}.jsonl"
   },
   "deepseek": {
     "base_url": "https://api.deepseek.com",

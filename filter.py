@@ -1,6 +1,7 @@
 import csv
 import smtplib
 import argparse
+import hashlib
 import html
 import json
 import time
@@ -108,9 +109,27 @@ def load_checkpoint(checkpoint_path: str) -> List[Dict[str, str]]:
 
 
 def append_checkpoint(checkpoint_path: str, paper: Dict[str, str]) -> None:
+    Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
     with open(checkpoint_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(paper, ensure_ascii=False) + "\n")
         f.flush()
+
+
+def build_checkpoint_path(config: Dict[str, Any], query: str) -> str:
+    arxiv_cfg = config["arxiv"]
+    checkpoint_template = arxiv_cfg.get(
+        "checkpoint",
+        "output/checkpoints/arxiv_${date}_${query_hash}.jsonl"
+    )
+    period_date = format_period_date(config)
+    query_hash = hashlib.sha1(query.encode("utf-8")).hexdigest()[:10]
+    checkpoint_path = Template(checkpoint_template).safe_substitute(
+        date=date_text_to_slug(period_date),
+        start_date=arxiv_cfg.get("start_date", ""),
+        end_date=arxiv_cfg.get("end_date", ""),
+        query_hash=query_hash
+    )
+    return checkpoint_path
 
 
 def fetch_arxiv_papers(config: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -127,8 +146,9 @@ def fetch_arxiv_papers(config: Dict[str, Any]) -> List[Dict[str, str]]:
     retry_sleep = arxiv_cfg.get("retry_sleep", 15)
     max_retry_sleep = arxiv_cfg.get("max_retry_sleep", 180)
 
-    checkpoint_path = arxiv_cfg.get("checkpoint", "arxiv_checkpoint.jsonl")
+    checkpoint_path = build_checkpoint_path(config, query)
     resume = arxiv_cfg.get("resume", True)
+    print(f"[arXiv] Checkpoint: {checkpoint_path}")
 
     papers = []
     seen_ids = set()

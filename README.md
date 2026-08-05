@@ -38,6 +38,7 @@ Main fields:
 
 - `arxiv.start_date` / `arxiv.end_date`: date range used when `--use-yesterday` is not set.
 - `arxiv.categories`: arXiv categories to search.
+- `arxiv.checkpoint`: checkpoint template for resumed arXiv fetching.
 - `topics`: research topics used by the LLM relevance judge.
 - `prompt.file`: prompt template file, default `prompt.json`.
 - `output.csv`: base CSV output filename.
@@ -246,4 +247,6 @@ Full abstracts are available in the generated HTML report, where they are shown 
 
 - `secrets.json` is ignored by git and should not be committed.
 - arXiv fetching can resume from `arxiv.checkpoint`.
-- If you rerun the same date range with checkpoint resume enabled, already fetched papers are loaded from the checkpoint.
+- The default checkpoint path is `output/checkpoints/arxiv_${date}_${query_hash}.jsonl`.
+- Do not use a single fixed checkpoint filename across different dates. A fixed filename will mix papers from previous runs into later runs and can also skip papers because pagination starts from the old checkpoint length.
+- If you rerun the same date range and category query with checkpoint resume enabled, already fetched papers are loaded from that query-specific checkpoint.
