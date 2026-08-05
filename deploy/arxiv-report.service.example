@@ -10,6 +10,8 @@ WorkingDirectory=/opt/paper_filter
 Environment=ARXIV_REPORT_HOST=0.0.0.0
 Environment=ARXIV_REPORT_PORT=8000
 Environment=ARXIV_REPORT_OUTPUT_DIR=output
+Environment=ARXIV_REPORT_ADMIN_USER=CHANGE_ME_ADMIN_USER
+Environment=ARXIV_REPORT_ADMIN_PASSWORD=CHANGE_ME_ADMIN_PASSWORD
 ExecStart=/usr/bin/python3 /opt/paper_filter/web_server.py
 Restart=always
 RestartSec=5

@@ -10,6 +10,8 @@ Fetch papers from arXiv, ask an LLM to judge whether they match configured resea
 - Keep the LLM prompt in `prompt.json` for easy editing.
 - Export related papers to the `output` directory with a date suffix by default.
 - Generate a daily HTML report with collapsible abstracts.
+- Regenerate a report for a selected date from the web UI without using checkpoints.
+- Manage configured research topics from the web UI.
 - Optionally email sorted paper summaries by topic and arXiv ID.
 - Send different topic subsets to different recipient groups.
 
@@ -170,6 +172,30 @@ http://127.0.0.1:8000
 ```
 
 The page lists generated `output/report_*.html` files and lets you choose the report date.
+
+The web page also provides:
+
+- `Regenerate Report`: starts `filter.py --date YYYY-MM-DD --no-resume` in the background. Existing CSV/HTML outputs for that date are overwritten, and the matching checkpoint is removed before fetching.
+- `Topics`: edits the top-level `topics` list in `config.json`. Enter one topic per line.
+
+These management actions require HTTP Basic authentication. Configure credentials with:
+
+```bash
+export ARXIV_REPORT_ADMIN_USER="admin"
+export ARXIV_REPORT_ADMIN_PASSWORD="change-this-password"
+python web_server.py
+```
+
+If either variable is missing, management buttons are disabled and POST requests return `403`.
+
+For systemd deployment, set these variables in the service file:
+
+```ini
+Environment=ARXIV_REPORT_ADMIN_USER=admin
+Environment=ARXIV_REPORT_ADMIN_PASSWORD=change-this-password
+```
+
+Basic authentication is sufficient for private LAN use. On a public network, put the service behind HTTPS, VPN, or a reverse proxy; otherwise the password can be exposed in transit.
 
 ### arXiv daily window
 

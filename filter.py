@@ -184,6 +184,11 @@ def fetch_arxiv_papers(config: Dict[str, Any]) -> List[Dict[str, str]]:
         papers = load_checkpoint(checkpoint_path)
         seen_ids = {p["arxiv_id"] for p in papers}
         print(f"[arXiv] Loaded checkpoint papers: {len(papers)}")
+    else:
+        checkpoint_file = Path(checkpoint_path)
+        if checkpoint_file.exists():
+            checkpoint_file.unlink()
+            print(f"[arXiv] Removed checkpoint: {checkpoint_path}")
 
     start = len(papers)
 
@@ -314,6 +319,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use yesterday as the report date and query the configured daily arXiv window."
     )
+    parser.add_argument(
+        "--date",
+        help="Use a specific report date in YYYY-MM-DD format and query the configured daily arXiv window."
+    )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Ignore existing arXiv checkpoints and fetch from the beginning."
+    )
     return parser.parse_args()
 
 
@@ -321,17 +335,29 @@ def apply_runtime_options(
     config: Dict[str, Any],
     args: argparse.Namespace
 ) -> str | None:
-    if not args.use_yesterday:
+    runtime_date = None
+
+    if args.date:
+        datetime.strptime(args.date, "%Y-%m-%d")
+        runtime_date = args.date
+    elif args.use_yesterday:
+        runtime_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    if args.no_resume:
+        config["arxiv"]["resume"] = False
+
+    if not runtime_date:
         return None
 
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    config["arxiv"]["start_date"] = yesterday
-    config["arxiv"]["end_date"] = yesterday
+    config["arxiv"]["start_date"] = runtime_date
+    config["arxiv"]["end_date"] = runtime_date
     config["arxiv"].setdefault("query_window", {})
     config["arxiv"]["query_window"]["mode"] = "daily_cutoff_utc"
-    print(f"[Config] Using yesterday as report date: {yesterday}")
+    print(f"[Config] Using report date: {runtime_date}")
     print(f"[Config] arXiv query window: {format_query_window(config)}")
-    return yesterday
+    if args.no_resume:
+        print("[Config] Checkpoint resume disabled.")
+    return runtime_date
 
 
 def format_period_date(config: Dict[str, Any]) -> str:
